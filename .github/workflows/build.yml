@@ -1,0 +1,85 @@
+name: Build Zara APK
+
+# Works in 2 cases:
+#  1) Project files uploaded normally (extracted)
+#  2) Only the .zip uploaded to the repo (NOT extracted) -> auto-unzips and builds
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Locate project (auto-extract ZIP if needed)
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          find_settings() {
+            find . -type f \( -name 'settings.gradle.kts' -o -name 'settings.gradle' \) \
+              -not -path './.git/*' -not -path '*/build/*' | head -n 1
+          }
+
+          SETTINGS="$(find_settings || true)"
+
+          if [ -z "$SETTINGS" ]; then
+            echo "No Gradle project found. Looking for ZIP files..."
+            COUNT=0
+            while IFS= read -r -d '' z; do
+              COUNT=$((COUNT+1))
+              echo "Extracting: $z"
+              mkdir -p "_extracted/zip_$COUNT"
+              unzip -q -o "$z" -d "_extracted/zip_$COUNT"
+            done < <(find . -type f -iname '*.zip' -not -path './.git/*' -not -path './_extracted/*' -print0)
+            SETTINGS="$(find_settings || true)"
+          fi
+
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::No settings.gradle(.kts) found, and no ZIP containing one."
+            exit 1
+          fi
+
+          ROOT="$(dirname "$SETTINGS")"
+          echo "Project root: $ROOT"
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build debug APK
+        working-directory: ${{ steps.locate.outputs.root }}
+        run: |
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+            ./gradlew --no-daemon --stacktrace :app:assembleDebug
+          else
+            gradle --no-daemon --stacktrace :app:assembleDebug
+          fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zara-debug-apk
+          path: ${{ steps.locate.outputs.root }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
